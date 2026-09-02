@@ -1,13 +1,34 @@
+<div align="center">
+
 # Sistema algorítmico de reversión sobre perfil de volumen
 
-Trabajo Fin de Máster — Inteligencia artificial aplicada a mercados financieros.
+**Trabajo Fin de Máster** · Inteligencia artificial aplicada a mercados financieros
+
+<br>
+
+### ▶ &nbsp; [ABRIR LA MEMORIA INTERACTIVA](https://claude.ai/code/artifact/a0890ff8-5877-43b0-b642-e735ac4419e1) &nbsp; ◀
+
+[![Abrir la memoria](https://img.shields.io/badge/Memoria_del_TFM-Resultados_interactivos-0D6B65?style=for-the-badge&logo=googlechrome&logoColor=white)](https://claude.ai/code/artifact/a0890ff8-5877-43b0-b642-e735ac4419e1)
+
+*Planteamiento, estrategia, resultados con gráficos navegables,
+componente de IA, validación y anexo técnico completo*
+
+<br>
+
+![Python](https://img.shields.io/badge/Python-3.14-3776AB?style=flat-square&logo=python&logoColor=white)
+![Pruebas](https://img.shields.io/badge/pruebas-130_en_verde-0D6B65?style=flat-square)
+![BTC](https://img.shields.io/badge/BTC-%2B28,5%25-0D6B65?style=flat-square)
+![ONDO](https://img.shields.io/badge/ONDO-%2B23,7%25-0D6B65?style=flat-square)
+![Apalancamiento](https://img.shields.io/badge/apalancamiento-1x-A4650F?style=flat-square)
+
+</div>
+
+---
 
 Bot de trading que identifica los precios donde el mercado concentró su
 actividad, espera a que el precio vuelva a visitarlos y opera contra el
 movimiento que los alcanza. Desarrollado íntegramente en Python, validado
 sobre dos años de datos históricos y sometido a control frente al azar.
-
-**[Memoria completa con resultados interactivos →](https://claude.ai/code/artifact/a0890ff8-5877-43b0-b642-e735ac4419e1)**
 
 ## Resultados
 
