@@ -1,0 +1,32 @@
+# Entorno virtual
+.venv/
+
+# Caché de datos: parquets pesados, se regeneran solos con data/loader.py
+data/raw/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Resultados intermedios de experimentos (los definitivos sí se versionan)
+experiments/resultados/*.tmp
+
+# Ajustes locales del editor y del asistente
+.claude/
+.vscode/
+.idea/
+
+# Restos vacios
+test_kraken.py
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Credenciales: nunca deben subirse
+.env
+*.key
+secrets.yaml

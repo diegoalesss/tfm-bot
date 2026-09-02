@@ -1,0 +1,25 @@
+ccxt==4.5.76
+pandas==3.0.5
+numpy==2.5.2
+pyarrow==25.0.1
+PyYAML==6.0.3
+truststore==0.10.4
+plotly==7.0.0
+
+# Instalado el 02/09/2026. Arrastra numba 0.67 y llvmlite 0.49.
+#
+# AVISO: vectorbt 1.1.0 declara `plotly>=4.12.0` sin tope superior,
+# pero sus plantillas de tema llevan claves de la era Mapbox
+# (`scattermapbox`, `layout.mapbox`) que Plotly 6 elimino. Con
+# plotly 7 el simple `import vectorbt` falla.
+#
+# NO se baja plotly: la 7.0.0 esta fijada arriba y es la que dibuja los
+# graficos del notebook, ya validados. En su lugar se limpian los JSON
+# de temas de vectorbt, que estan en:
+#     .venv\Lib\site-packages\vectorbt\templates\{dark,light,seaborn}.json
+# quitando de ellos las claves `scattermapbox` y `mapbox`.
+#
+# El parche vive en site-packages, asi que HAY QUE REPETIRLO si se
+# reinstala o actualiza vectorbt. Comprobacion rapida de si hace falta:
+#     .venv\Scripts\python.exe -c "import vectorbt"
+vectorbt==1.1.0

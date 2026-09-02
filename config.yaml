@@ -1,0 +1,1102 @@
+﻿# Configuración del bot de trading algorítmico (TFM)
+#
+# Todos los valores proceden de SPEC.md. No añadir aquí parámetros
+# que no estén definidos en SPEC.md: si falta un valor, se deja en
+# `null` y se marca como PENDIENTE con referencia a la sección de
+# SPEC.md correspondiente, en vez de inventarlo.
+
+exchange:
+  # id de ccxt para Kraken Futures (perpetuos)
+  id: "krakenfutures"
+  nombre: "Kraken Futures"
+
+datos:
+  # Histórico a descargar hacia atrás desde la fecha actual (SPEC.md §1)
+  historico_anios: 2
+
+  # Timeframe de decisión (SPEC.md §1)
+  timeframe_decision: "4h"
+
+  # Timeframe de construcción del FRVP para rangos < 60 velas de 4h
+  # (SPEC.md §1). Los umbrales de 1h/4h para rangos mayores son
+  # PENDIENTES de implementar: no se usan todavía en esta fase.
+  timeframe_frvp: "15m"
+
+  # Origen del volumen (SPEC.md §2). "kraken" en fase 1,
+  # "aggregated" (multi-exchange) en fase 2
+  volume_source: "kraken"
+
+  # Símbolos activos actualmente. La watchlist final de 5-8 pares
+  # líquidos por criterio objetivo está PENDIENTE de definir
+  # (SPEC.md §6). Estos dos son los símbolos usados para las
+  # pruebas del módulo de ingesta.
+  simbolos:
+    - "ONDO/USD:USD"
+    - "BTC/USD:USD"
+
+frvp:
+  # Número de bins del histograma de volumen (SPEC.md §4, fijado)
+  bins: 1000
+
+  # Porcentaje de volumen de la Value Area (SPEC.md §4, parametrizable)
+  value_area_pct: 0.70
+
+filtro_1_rango_lateral:
+  # Metodología: caja de Darvas con techo y suelo por el pivote más
+  # extremo de cada lado (SPEC.md §5). El rectángulo se deriva de la
+  # estructura del precio (swing highs/lows confirmados) y solo después
+  # se contrasta contra los cierres. Justificación completa en el
+  # docstring de core/range_detector.py.
+  #
+  # La detección se corre SOLO sobre 4h, con VARIAS VENTANAS de distinto
+  # tamaño, para captar rangos anidados de distinta escala sin elegir
+  # una a priori. Es lo que pedía la versión original de SPEC.md ("la
+  # detección se corre con N = 60, 150 y 400"), y sustituye a la fase
+  # intermedia de multi-timeframe (1w/1d/4h), que no lograba trazar los
+  # laterales grandes: el tamaño del rectángulo lo fija la ventana, y
+  # una ventana de 60 velas (~10 días) no puede ver un lateral de 3
+  # meses por muchos parámetros que se ajusten.
+  #
+  # Ventanas calibradas contra los rangos que el autor traza a mano en
+  # TradingView sobre ONDO y BTC en 4h (9 cajas de referencia): esta
+  # combinación reproduce 8 de las 9 con IoU > 0.3 y 6 con IoU > 0.5,
+  # sin admitir ninguna de las 7 formaciones en V confirmadas.
+  #
+  # `tipo` distingue la ESCALA del rectángulo, no su calidad. Ambos
+  # tipos son operables: sobre los dos se traza un FRVP y de los dos
+  # salen niveles de entrada (VAH, POC, VAL).
+  #   principal  — ventanas largas (150-400 velas, 1-3 meses). Son los
+  #                laterales de estructura mayor y, en la operativa del
+  #                autor, LOS MÁS OPERABLES: cuanto más tiempo ha
+  #                pasado el precio construyendo el rango, más volumen
+  #                acumula el perfil y más fiables son sus niveles.
+  #   secundario — ventanas cortas (40-60 velas, 1-2 semanas). Rangos
+  #                anidados dentro de los principales, también
+  #                operables pero de menor peso.
+  ventanas:
+    - velas: 40
+      tipo: "secundario"
+    - velas: 60
+      tipo: "secundario"
+    - velas: 150
+      tipo: "principal"
+    - velas: 250
+      tipo: "principal"
+    - velas: 400
+      tipo: "principal"
+
+  # Duración mínima de un rango, como fracción de su ventana.
+  # AVISO: no llega a activarse nunca, porque la duración de un rango
+  # es siempre >= N-4 por construcción (arranca N-1 velas antes de la
+  # vela de declaración). Se conserva como salvaguarda.
+  fraccion_duracion_minima: 0.66
+
+  # Separación mínima entre dos toques del mismo nivel, como fracción
+  # de la ventana. Dos pivotes de velas contiguas pertenecen al mismo
+  # impulso: son UN test del nivel, no dos.
+  #
+  # Sin esta regla, el techo del lateral de BTC de feb-abr 2026 salía
+  # en 78798 porque lo confirmaban dos swing highs del 2 y el 3 de
+  # febrero, o sea la cola de la caída anterior, no el rango. El
+  # rectángulo medía 16000 de alto frente a los 7500 reales.
+  #
+  # 0.10 sobre N=250 son 25 velas (~4 días): suficiente para que dos
+  # toques sean visitas distintas al nivel y no el mismo movimiento.
+  fraccion_separacion_toques: 0.10
+
+  # Velas exigidas a cada lado de un pivote para confirmarlo (R). Es un
+  # criterio de forma sobre velas de 4h, así que es el mismo para todas
+  # las ventanas. R=3 -> 12 h de retraso de confirmación.
+  barras_confirmacion_pivote: 3
+
+  # Tope de altura del rectángulo (techo - suelo) en múltiplos del ATR,
+  # medido en la vela de declaración. Escala con la RAÍZ del tamaño de
+  # ventana, que es como crece el recorrido de un paseo aleatorio:
+  #     tope = altura_maxima_atr_base * sqrt(N / altura_calibrada_sobre_velas)
+  # Resultante: N=40 -> 6.5   N=60 -> 8.0   N=150 -> 12.6
+  #             N=250 -> 16.3  N=400 -> 20.7
+  # Un tope fijo de 5 ATR (el de la fase anterior) partía los rangos
+  # grandes en fragmentos: los laterales de 3 meses de BTC miden entre
+  # 7 y 12.6 ATR y quedaban sistemáticamente rechazados.
+  altura_maxima_atr_base: 8.0
+  altura_calibrada_sobre_velas: 60
+
+  # R² máximo de la regresión lineal sobre la ventana: por debajo de
+  # este valor se considera que el precio rebota y no sigue una recta
+  # (SPEC.md §5). Criterio relativo (bondad del ajuste), no depende del
+  # tamaño de la ventana, así que es el mismo para todas.
+  r2_maximo: 0.3
+
+  # Criterio de pendiente, anclado a la ALTURA DEL RECTÁNGULO:
+  #     |pendiente| * N < fraccion_pendiente_altura * (techo - suelo)
+  # Es decir: la deriva total que la recta de regresión proyecta a lo
+  # largo de la ventana no puede consumir más de esta fracción de la
+  # altura del rectángulo.
+  #
+  # 0.5 porque, si la deriva igualara la altura completa, el precio
+  # habría recorrido el rectángulo de suelo a techo a lo largo de la
+  # ventana: eso es un canal inclinado, no un rango. Al limitarla a la
+  # mitad, la componente tendencial se queda como mucho con medio
+  # rectángulo y el resto tiene que ser oscilación.
+  fraccion_pendiente_altura: 0.5
+
+  # Fracción mínima de cierres de la ventana que deben quedar dentro
+  # del rectángulo para declarar rango. Las mechas no cuentan: solo
+  # los cierres.
+  contencion_minima_cierres: 0.85
+
+  # Oscilación mínima: veces que el precio debe cruzar el punto medio
+  # del rectángulo dentro de la ventana de declaración. Distingue un
+  # lateral de una formación en V: en un lateral el precio recorre el
+  # rectángulo de arriba abajo varias veces; en una V lo hace una sola,
+  # y aun así tiene pendiente neta casi nula y queda contenida, así que
+  # ningún otro criterio la excluye.
+  #
+  # 7 es el umbral más bajo que elimina las 7 formas en V confirmadas
+  # visualmente sobre ONDO y BTC. Con 6 sobrevive ONDO 2026-05-12, que
+  # fue el caso que motivó el criterio.
+  #
+  # NO se escala con el tamaño de la ventana. Se probó escalarlo
+  # (7/60 por vela) y es inviable: con N=250 exigiría 29 cruces y con
+  # N=400, 47, umbrales inalcanzables que anulaban toda la detección en
+  # las ventanas largas. Un lateral no cruza el medio más veces por ser
+  # más largo, cruza más veces por ser más oscilante.
+  #
+  # Se mide sobre la ventana de declaración, no sobre el tramo
+  # completo: el tramo completo no se conoce hasta que el rango
+  # termina, y filtrar con él sería lookahead.
+  cruces_minimos_medio: 7
+
+  # Cierres CONSECUTIVOS fuera del rectángulo que dan por terminado el
+  # rango. Una vela que sale y vuelve es un barrido de stops, no una
+  # ruptura. También se exige que no haya una racha así dentro de la
+  # ventana de declaración.
+  cierres_fuera_fin_rango: 5
+
+  # Pivotes que deben acompañar al extremo dentro de la tolerancia para
+  # aceptarlo como nivel. Con menos de 2, un pico aislado bastaría para
+  # definir el techo.
+  toques_minimos_nivel: 2
+
+  # Tolerancia para contar toques junto al extremo, en múltiplos del
+  # ATR. Subida de 0.5 a 1.5: con 0.5 el pivote más extremo casi nunca
+  # tenía compañía y el detector descartaba la ventana entera aun
+  # teniendo 6 o 7 pivotes disponibles ("sin rectángulo" bloqueaba el
+  # 80% de las ventanas). Con 2.0 el ajuste a las cajas manuales mejora
+  # algo más, pero se cuelan 2 formaciones en V, así que no se sube.
+  #
+  # El ATR se calcula con mechas, pero aquí no define ningún nivel de
+  # precio: es solo la unidad de tolerancia con la que se decide si dos
+  # pivotes están en el mismo sitio.
+  anchura_banda_atr: 1.5
+
+  # Periodo del ATR usado como unidad de tolerancia.
+  atr_periodo: 14
+
+  # --- Selección de rangos operables (`seleccionar_rangos`) ---
+  #
+  # El detector devuelve la misma consolidación vista por varias
+  # ventanas a la vez. Sobre cada rango se traza un FRVP con tres
+  # niveles (VAH, POC, VAL) proyectados hacia la derecha, así que más
+  # de un puñado de rangos llena el gráfico de líneas y deja de poder
+  # operarse.
+  #
+  # Nota mínima para considerar un rango operable, POR TIPO. Por
+  # debajo, el rectángulo cumple las reglas pero es de los menos
+  # laterales.
+  #
+  # El listón es más bajo en contexto porque la nota incluye la
+  # estrechez del rectángulo, y un rango de 3 meses es alto por
+  # naturaleza: exigirle la misma nota que a uno de 10 días lo
+  # penalizaría por ser justo lo que se le pide, delimitar estructura
+  # mayor. El listón alto en operativo es lo que mantiene el gráfico
+  # legible: son los numerosos.
+  calidad_minima_seleccion:
+    principal: 0.40
+    secundario: 0.70
+
+  # Solape temporal por encima del cual dos rangos del MISMO tipo se
+  # consideran la misma zona y solo sobrevive el más relevante
+  # (calidad x duración). La supresión se hace dentro de cada tipo:
+  # un rango operativo dentro de uno de contexto no es redundante,
+  # es la estructura anidada que se quiere operar.
+  #
+  # Con estos valores, BTC pasa de ~116 rangos a 40: 10 de contexto
+  # —el autor traza 7 a mano sobre el mismo periodo— y el resto
+  # operativos anidados dentro de ellos.
+  #
+  # No bajar a 0.05: el lateral de BTC de may-jul 2025 se solapa un 6%
+  # con el de jul-oct, y con el umbral en 0.05 quedaba eliminado por
+  # ese punto porcentual pese a ser un rango correcto (IoU 0.96 con el
+  # trazado a mano).
+  solape_maximo_seleccion: 0.10
+
+  # Ocupación mínima de los bordes: fracción de cierres de la ventana
+  # que debe caer en la banda superior y en la inferior del rectángulo
+  # (cada banda mide `banda_bordes` de la altura).
+  #
+  # DESACTIVADO (0.0), pero el mecanismo se conserva porque el
+  # problema que ataca sigue abierto.
+  #
+  # El problema: la contención se cumple por construcción en cuanto el
+  # rectángulo es lo bastante grande. Una caja del 142% de altura
+  # contiene el 98.5% de los cierres en ONDO, así que el criterio deja
+  # de filtrar y pasan "contenedores" que no son rangos. La idea era
+  # exigir que el precio VISITE ambos extremos: un rango real testea
+  # techo y suelo, un contenedor los tiene de adorno.
+  #
+  # Por qué está desactivado: medido con umbral 0.08, el ajuste a los
+  # rangos de BTC trazados a mano cae de 0.875 a 0.747, porque parte
+  # en dos los laterales de feb-abr y abr-may de 2026 (0.93 -> 0.41 y
+  # 0.89 -> 0.45). El motivo es real y no es un fallo de calibración:
+  # dentro de un lateral bueno el precio NO reparte sus visitas de
+  # forma uniforme, pasa temporadas pegado a una mitad del rectángulo.
+  # Medir la ocupación sobre la ventana entera castiga esa asimetría,
+  # que es normal.
+  #
+  # Para reactivarlo haría falta una medida que tolere la asimetría:
+  # por ejemplo, exigir que cada borde se visite en algún tramo del
+  # rango, no en una fracción del total.
+  banda_bordes: 0.20
+  ocupacion_bordes_minima: 0.0
+
+  # Salvaguarda contra "contenedores": altura máxima del rectángulo
+  # como fracción de su suelo (1.20 = el techo no puede ser más de
+  # 2.2 veces el suelo).
+  #
+  # El tope en ATR no basta para esto: medido, el contenedor de ONDO
+  # de nov-24 a mar-25 son 12.4 ATR y un rango bueno de BTC son 11.5,
+  # así que se solapan. El ATR viene inflado por el propio movimiento
+  # que formó la caja, y por eso no la delata. En precio sí se
+  # separan: aquel rectángulo medía un 142% de altura, o sea que el
+  # precio más que se dobló dentro del supuesto rango. Eso no es
+  # consolidación, es un ciclo entero.
+  #
+  # Es salvaguarda, no criterio principal: el tope en ATR sigue siendo
+  # el que acota la altura caso a caso. Medido, 1.20 elimina ese
+  # contenedor y no toca ningún otro rango de BTC ni de ONDO.
+  altura_maxima_pct: 1.20
+
+  # Recorridos exigidos segun la altura del rectangulo. Un recorrido es
+  # un viaje completo de la banda alta a la baja (o al reves), medido
+  # sobre la ventana de declaracion.
+  #
+  #   exigidos = recorridos_minimos_base
+  #            + max(0, altura_relativa - altura_sin_penalizar_pct)
+  #              / pct_por_recorrido_extra
+  #
+  # Es lo que distingue un rango de un CONTENEDOR. Ni la altura ni los
+  # recorridos separan por separado: medido, el contenedor de ONDO de
+  # nov-24 a mar-25 y el lateral bueno de BTC de feb-abr 2026 tienen
+  # ambos 2 recorridos, y sus alturas en ATR se solapan (12.4 y 11.5).
+  # Lo que los separa es la combinacion: una caja del 118% recorrida
+  # dos veces es un contenedor -el precio subio y volvio-, mientras que
+  # una del 19% recorrida dos veces es un lateral normal.
+  #
+  # Con base 1.0 y pendiente 0.10: hasta un 30% de altura basta con 1
+  # recorrido, y a partir de ahi se pide uno mas por cada 10%
+  # adicional. El contenedor del 118% necesitaria 9.8 y tiene 2.
+  #
+  # Base 2.0 mataba ademas 6 rangos secundarios buenos de BTC (cajas
+  # del 4-14% que oscilan sin llegar a las bandas extremas dos veces).
+  # Con base 1.0 vuelven, y el contenedor sigue eliminado.
+  recorridos_minimos_base: 1.0
+  altura_sin_penalizar_pct: 0.30
+  pct_por_recorrido_extra: 0.10
+
+  # Longitud de la cola que se examina al cerrar un rango, como
+  # fraccion de la ventana. Si esas ultimas velas no cumplen
+  # `contencion_minima_cierres`, el fin se retrasa hasta que si la
+  # cumplan.
+  #
+  # La regla de los 5 cierres consecutivos exige una racha limpia. Si
+  # el precio rompe entrando y saliendo -sale tres velas, vuelve una,
+  # vuelve a salir- nunca la junta, y el rango sobrevive varios dias
+  # dentro de su propia rotura. Medido en ONDO: el lateral de dic-2024
+  # llegaba al 29 de diciembre cuando el precio ya estaba rompiendo
+  # desde el 27.
+  fraccion_cola_contencion: 0.10
+
+# ---------------------------------------------------------------------
+# DATOS DE FLUJO (funding rate)
+# ---------------------------------------------------------------------
+#
+# El funding es lo que pagan unos titulares a otros para mantener el
+# perpetuo pegado al contado. POSITIVO = los largos pagan a los cortos,
+# o sea exceso de posiciones largas; negativo, al reves. Es la medida
+# mas directa y gratuita del desequilibrio de apalancamiento, que es el
+# contexto que le falta a una estrategia que solo mira estructura de
+# precio.
+#
+# AVISO METODOLOGICO: el precio y la ejecucion son de KRAKEN y el
+# funding es de BINANCE. Kraken publica el suyo, pero su historico via
+# CCXT arranca en agosto de 2025 y no cubre los dos anios del backtest;
+# Binance si llega (BTC y ONDO desde septiembre de 2024).
+#
+# Es la misma clase de mezcla que ya contempla `volume_source:
+# "aggregated"` (SPEC.md §2) y hay que declararla igual en la memoria.
+# Se sostiene porque el desequilibrio de apalancamiento en perpetuos es
+# una variable de mercado GLOBAL -los arbitrajistas mantienen los
+# funding alineados entre plataformas- pero no es gratis: el numero
+# exacto de Binance no es el que se cobra en Kraken.
+#
+# El OPEN INTEREST se queda fuera a proposito: el endpoint de Binance
+# rechaza `startTime` y solo sirve los ultimos 30 dias, asi que no hay
+# forma de medir si aporta. Queda como linea futura para paper/live,
+# donde si puede registrarse en vivo.
+flujo:
+  # Exchange del que se toma el funding (id de CCXT).
+  exchange: "binanceusdm"
+
+  # Equivalencia explicita entre el simbolo de ejecucion (Kraken) y el
+  # del exchange de funding. Explicita y no derivada por manipulacion de
+  # cadenas: un simbolo mal traducido en silencio contaminaria todo el
+  # backtest sin dar la cara.
+  #
+  # Frecuencia de pago medida: BTC cada 8 h, ONDO cada 4 h. La
+  # alineacion propaga el ultimo pago conocido, asi que la diferencia no
+  # es problema.
+  simbolos:
+    "BTC/USD:USD": "BTC/USDT:USDT"
+    "ONDO/USD:USD": "ONDO/USDT:USDT"
+
+  # Ventana del z-score del funding, en velas de 4h. 180 velas = 30
+  # dias: suficiente para que "extremo" signifique extremo para ESTE
+  # activo y no un umbral absoluto, que no seria comparable entre BTC y
+  # una alt.
+  ventana_zscore: 180
+
+  # Pagos que se suman para medir presion SOSTENIDA en vez de un pico
+  # suelto. 6 velas de 4h = un dia.
+  velas_acumulado: 6
+
+# ---------------------------------------------------------------------
+# ESTRUCTURA DE MERCADO
+# ---------------------------------------------------------------------
+#
+# Alcista, bajista o indefinida, segun la sucesion de maximos y minimos
+# de swing (core/structure.py):
+#   alcista     maximo mayor que el anterior Y minimo mayor
+#   bajista     maximo menor que el anterior Y minimo menor
+#   indefinida  el resto (el precio se ensancha o consolida)
+#
+# Motivo de tenerla: medido en SPEC.md §8, las operaciones contra la
+# direccion de la estructura son las que hunden el resultado. Vender el
+# VAH acierta un 4.3% en BTC y un 5.6% en ONDO. El problema no es el
+# stop -esas operaciones apenas se mueven a favor antes de morir- sino
+# tomarlas.
+estructura_mercado:
+  # Velas a cada lado para confirmar un pivote (R). Mismo valor que el
+  # Filtro 1: es la misma nocion de swing, y tener dos definiciones de
+  # "maximo relevante" en el mismo sistema seria pedir que se
+  # contradigan.
+  barras_confirmacion_pivote: 3
+
+# ---------------------------------------------------------------------
+# IMBALANCES (Fair Value Gaps)
+# ---------------------------------------------------------------------
+#
+# Franjas de precio que el mercado atraveso sin negociar, detectadas
+# con el patron de TRES VELAS: si el minimo de la tercera queda por
+# encima del maximo de la primera, ese hueco no se ha negociado
+# (alcista), y al reves para el bajista.
+#
+# En cripto no hay huecos de apertura como en acciones -el mercado no
+# cierra nunca-, asi que el imbalance de tres velas es la unica forma
+# real de hueco y por eso es la que se busca.
+#
+# Se usaran como ZONAS DE OBJETIVO, ademas de los niveles del FRVP.
+# El motivo de meterlos ahora: medido en SPEC.md §8, con solo 27
+# niveles del FRVP el primer objetivo llega a quedar a un -30% de la
+# entrada, asi que casi ninguna operacion lo alcanza. Hacen falta mas
+# zonas de salida intermedias.
+imbalances:
+  # Timeframe donde se buscan. SEMANAL por decision del autor: son
+  # zonas de estructura mayor. En 4h saldrian decenas sin peso.
+  timeframe: "1w"
+
+  # El relleno se mide CON MECHAS: si el precio paso por ahi, esa
+  # franja ya se negocio, aunque la vela cerrara fuera. Es coherente
+  # con definir el hueco por maximos y minimos, y es lo que pidio el
+  # autor ("cuando el precio pasa por ahi, no tiene por que ser si o
+  # si un cierre").
+  #
+  # No es parametrizable todavia: esta fijado en el codigo
+  # (core/imbalances.py). Si algun dia se quiere medir la alternativa
+  # por cierres, este es el sitio donde poner el interruptor.
+  relleno_con_mechas: true
+
+# ---------------------------------------------------------------------
+# EXPERIMENTO: operar los toques de VAH / POC / VAL
+# ---------------------------------------------------------------------
+#
+# AVISO IMPORTANTE: esta seccion NO forma parte de la estrategia ni
+# procede de SPEC.md. Es un experimento exploratorio para medir si los
+# niveles del FRVP tienen valor operativo por si solos, antes de anadir
+# mas capas al sistema (lineas de tendencia, mapa de liquidaciones,
+# SQZ+ADX+TTM, RSI).
+#
+# TODOS los valores de aqui abajo son de PARTIDA y estan SIN MEDIR. Son
+# el punto de arranque acordado, no una calibracion: no deben citarse
+# como decision justificada hasta que el experimento los mida. Lo que
+# se mida se documentara en SPEC.md §7.
+#
+# Regla probada: el precio llega a un nivel desde arriba -> long; llega
+# desde abajo -> short. Salida escalonada en los tres niveles
+# siguientes, con el stop a break-even al alcanzar el segundo.
+experimento_toques_frvp:
+  # Solo se operan los niveles de los rangos de este tipo. `principal`
+  # son los laterales de estructura mayor (1-3 meses): mas tiempo
+  # construyendo el rango significa mas volumen en el perfil y niveles
+  # mas fiables.
+  tipos_operables:
+    - "principal"
+
+  # De donde salen los rangos cuyos FRVP se operan:
+  #
+  #   "global"  `seleccionar_rangos` sobre todo el historico. Son
+  #             EXACTAMENTE los rangos que se dibujan en el grafico
+  #             (9 principales en BTC -> 27 niveles), ni uno mas ni
+  #             uno menos. Es la operativa que el autor valida a mano.
+  #   "causal"  `seleccionar_causalmente`: rehace la seleccion en cada
+  #             instante de confirmacion. No usa informacion futura,
+  #             pero conserva rangos que despues quedaron suprimidos,
+  #             y eso triplica la rejilla (25 principales en BTC -> 75
+  #             niveles), con variantes casi duplicadas de la misma
+  #             zona.
+  #
+  # ELEGIDO: "global", por decision del autor. Se opera lo que se ve.
+  #
+  # SESGO ASUMIDO Y CONOCIDO: la supresion de solapados de
+  # `seleccionar_rangos` es voraz, asi que al anadir rangos
+  # posteriores puede cambiar cual sobrevive entre VECINOS solapados.
+  # Un rango que en su momento era el elegido de su zona puede dejar
+  # de estarlo cuando aparece otro que se le solapa, y al operar el
+  # primero esa decision todavia no podia tomarse.
+  #
+  # No se tapa: el experimento mide las dos variantes y publica la
+  # diferencia (SPEC.md §8). Eso convierte el sesgo en un numero
+  # declarado en vez de en un problema oculto.
+  seleccion_rangos: "global"
+
+  # Distancia minima entre la entrada y un objetivo, y entre dos
+  # objetivos consecutivos, como fraccion del precio. Con decenas de
+  # lineas proyectadas, dos niveles pueden quedar casi pegados: cobrar
+  # un objetivo a 0.1% de la entrada no es un objetivo, es ruido que
+  # ademas paga dos comisiones.
+  #
+  # Es tambien lo que descarta el 50% de un imbalance FINO: si su punto
+  # medio queda a menos de esta distancia del borde, no se usa y el
+  # objetivo pasa a la zona siguiente. No hace falta un umbral aparte
+  # para "imbalance estrecho".
+  distancia_minima_nivel_pct: 0.005
+
+  # Zonas de los imbalances semanales que se usan como objetivo,
+  # ademas de los niveles del FRVP (SPEC.md §9). Solo para SALIR: las
+  # entradas siguen produciendose unicamente en niveles del FRVP.
+  #
+  # De cada imbalance vivo salen dos: su borde de entrada (nada mas
+  # tocarlo) y el 50% de lo que le queda SIN RELLENAR, no del hueco
+  # original. Todo entra en una sola lista ordenada por cercania, asi
+  # que TP1 es lo primero que el precio se encuentra, venga del FRVP o
+  # de un imbalance: un TP2 no puede estar mas cerca que un TP1.
+  usar_imbalances_como_objetivo: true
+
+  # TP1 nunca puede quedar mas cerca de la entrada que el stop. Un
+  # primer objetivo por debajo de 1R hace que el primer tercio
+  # arriesgue mas de lo que puede ganar, que es justo al reves de lo
+  # que se busca. Las zonas dentro de esa distancia se saltan y el
+  # objetivo pasa a la siguiente.
+  #
+  # Propuesto por el autor el 02/09/2026 y SIN MEDIR todavia
+  # ("probemos a ver que tal").
+  tp1_al_menos_como_el_stop: true
+
+  # Stop inicial, en multiplos del ATR por detras del nivel de entrada.
+  # Se ancla al ATR y no a un porcentaje fijo para que en tramos
+  # volatiles el stop se ensanche solo y no salte por ruido.
+  #
+  # SUBIDO DE 1.0 A 1.5 el 02/09/2026, tras el barrido de
+  # experiments/optimizar.py. Medido por el PEOR de cuatro
+  # subconjuntos (BTC y ONDO x dos mitades del historico):
+  #     1.0 -> -0.336    1.5 -> -0.059
+  #     2.0 -> -0.135    2.5 -> -0.118
+  # Con 1.0 el stop era el peor valor de todos los probados: saltaba
+  # por ruido antes de que la operacion tuviera ocasion de funcionar.
+  mult_atr_stop: 1.5
+
+  # Periodo del ATR del stop. Mismo valor que el del detector para no
+  # tener dos definiciones de volatilidad en el mismo sistema.
+  atr_periodo: 14
+
+  # Fraccion de la posicion que se cierra en cada objetivo. Reparto
+  # neutro: no supone nada sobre donde esta el valor del trade.
+  reparto_parciales: [0.3333, 0.3333, 0.3334]
+
+  # Objetivo tras el cual el stop del remanente sube a break-even
+  # (1 = tras TP1, 2 = tras TP2, 0 = nunca). El movimiento surte efecto
+  # a partir de la vela SIGUIENTE: dentro de la misma vela de 15m no se
+  # conoce el orden de los sucesos.
+  #
+  # MEDIDO break-even en TP1 en vez de en TP2: sube MUCHO el acierto
+  # (BTC 25.6% -> 48.8%, ONDO 35.7% -> 69.7%) y aun asi empeora el
+  # resultado, porque mata las ganadoras grandes. Es la trampa clasica:
+  # el acierto no es la metrica, lo es acierto x ganancia media.
+  #     BE en TP1   BTC -0.134 / PF 0.92    ONDO +0.002 / PF 1.12
+  #     BE en TP2   BTC -0.145 / PF 0.93    ONDO +0.028 / PF 1.15
+  mover_be_en_tp: 2
+
+  # Fallback cuando la rejilla no ofrece zonas por delante.
+  #
+  # Los TRES objetivos se escalonan a esta distancia uno del otro:
+  # TP1 a un 5% de la entrada, TP2 a un 5% de TP1 y TP3 a un 5% de TP2.
+  # La operacion conserva su estructura de tercios aunque no haya
+  # niveles que la guien, en vez de cerrar todo de golpe en el primero.
+  #
+  # Si solo faltan ALGUNOS objetivos, los que falten se refunden en uno
+  # solo al 5% desde la entrada (ver `_plan_de_salida`).
+  tp_fallback_pct: 0.05
+
+  # Tope de distancia del PRIMER objetivo, como fraccion del precio.
+  # Si el nivel que toca como TP1 esta mas lejos que esto, se cobra
+  # antes y el resto de la posicion sigue corriendo.
+  #
+  # Idea del autor (02/09/2026), a partir de un short de BTC del 1 de
+  # mayo de 2025 que recorrio un 3.4% a favor y acabo en stop sin
+  # cobrar nada.
+  #
+  # El diagnostico le da la razon a medias. De las operaciones que
+  # acaban en stop, cuantas llegaron a moverse a favor:
+  #     BTC   mediana 1.19%   al 3% llega el 19%
+  #     ONDO  mediana 2.42%   al 3% llega el 42%
+  # Hay mucho mas recorrido sin cobrar en ONDO que en BTC.
+  #
+  # MEDIDO (con break-even en TP2):
+  #                    BTC R / PF        ONDO R / PF
+  #     sin tope     -0.097 / 1.06     +0.005 / 1.11
+  #     tope 2%      -0.193 / 0.80     +0.040 / 1.23
+  #     tope 3%      -0.218 / 0.78     +0.020 / 1.18
+  #
+  # En ONDO es la mejor configuracion medida (retorno -0.2% -> +3.5%).
+  # En BTC la hunde: el acierto sube poco (22.1% -> 23.8%) pero la
+  # ganancia media se desploma (+3.16 R -> +2.04 R), y ese cambio no
+  # compensa. DESACTIVADO por defecto porque BTC pierde mas de lo que
+  # ONDO gana; queda listo para cuando la configuracion sea por activo.
+  tp1_maximo_pct: null
+
+  # El mismo tope, pero en MULTIPLOS DE ATR en vez de en porcentaje.
+  # Tiene prioridad sobre `tp1_maximo_pct` si ambos estan puestos.
+  #
+  # SOLO afecta a TP1. TP2 y TP3 siguen siendo los niveles del FRVP y
+  # los imbalances: la operacion conserva su estructura, solo se cobra
+  # antes el primer tercio.
+  #
+  # El ATR es la unidad correcta y no el porcentaje: el stop de 1.5 ATR
+  # mide un 2.3% en BTC y un 4.9% en ONDO, asi que un "3%" no significa
+  # lo mismo en cada activo.
+  #
+  # MEDIDO (peor de los cuatro subconjuntos: BTC y ONDO x dos mitades):
+  #   ATR      BTC R / PF        ONDO R / PF        peor de 4
+  #   ----   ---------------   ---------------   -------------
+  #   None   -0.097 / 1.06     +0.005 / 1.11         -0.097
+  #   1.0    -0.057 / 1.09     +0.037 / 1.14         -0.067  <- elegido
+  #   1.5    -0.105 / 1.02     +0.066 / 1.22         -0.112
+  #   2.0    -0.118 / 1.00     +0.047 / 1.21         -0.130
+  #   3.0    -0.127 / 0.99     +0.077 / 1.26         -0.136
+  #
+  # 1.0 ATR MEJORA LOS DOS ACTIVOS a la vez, que es lo que no habia
+  # conseguido ninguna otra palanca: BTC de 1.06 a 1.09 de PF con el
+  # drawdown bajando del 17.3% al 13.2%, y ONDO de 1.11 a 1.14.
+  #
+  # Con 1.5 ONDO va mejor todavia (PF 1.22, y sus dos mitades en
+  # positivo por primera vez) pero BTC empeora, asi que se queda en 1.0
+  # por el criterio del peor caso.
+  tp1_maximo_atr: 1.0
+
+  # `true` = los tres objetivos escalonados al 5% (lo que pidio el
+  # autor). `false` = un unico objetivo al 5% con el 100% de la
+  # posicion, que es como estaba antes.
+  #
+  # MEDIDO: el escalonado RESTA en BTC y es indiferente en ONDO.
+  #   sin limite, unico     BTC PF 1.11    ONDO PF 1.11
+  #   sin limite, escalon   BTC PF 1.06    ONDO PF 1.11
+  # Solo 6-8 operaciones caen en fallback, asi que el efecto es
+  # pequeno, pero va en contra. Se deja activado porque es lo pedido;
+  # ponerlo en `false` recupera esas dos centesimas de PF en BTC.
+  fallback_escalonado: true
+
+  # Stop del modo fallback. Con `sl_fallback_usa_atr: true` se usa el
+  # mismo stop de ATR que el resto de operaciones, para no tener dos
+  # criterios de riesgo en el mismo sistema. Con `false` se usa el
+  # porcentaje fijo de abajo.
+  sl_fallback_usa_atr: true
+  sl_fallback_pct: 0.02
+
+  # Distancia maxima entre dos objetivos consecutivos, como fraccion
+  # del precio. Si el siguiente nivel esta mas lejos que esto, no se
+  # espera hasta el: se cierra el tramo a esta distancia del objetivo
+  # ANTERIOR.
+  #
+  # Idea del autor (02/09/2026): "cuando una operacion toca tp1 pero
+  # el siguiente nivel esta bastante lejos, me pareceria bien cerrar
+  # tp2 a un 5% desde tp1". Va en la misma direccion que lo ya medido
+  # en SPEC.md §8: los objetivos a distancia fija rinden mejor que los
+  # anclados a estructura cuando la estructura queda lejisimos.
+  #
+  # Se aplica en cascada: si tp2 se recorta, tp3 se mide desde el tp2
+  # recortado.
+  #
+  # `null` desactiva el tope. SIN MEDIR todavia.
+  distancia_maxima_objetivo_pct: 0.05
+
+  # MODO ALTERNATIVO DE SALIDA: objetivos a multiplos fijos del riesgo
+  # (la distancia entrada-stop), ignorando por completo la estructura.
+  # Ejemplo: [1.0, 2.0, 3.0] cierra un tercio a 1R, otro a 2R y el
+  # ultimo a 3R.
+  #
+  # No es un capricho: la evidencia lo pedia (SPEC.md §8). Las
+  # operaciones cuyo primer objetivo estaba a 1-2R rinden +0.10/+0.15 R
+  # de media y las que lo tenian a mas de 3R, -0.13/-0.20. Y el
+  # fallback fijo del 5% batia con holgura a los objetivos sacados de
+  # la rejilla.
+  #
+  # `null` = desactivado, se usan los niveles del FRVP y los
+  # imbalances como objetivo.
+  objetivos_en_r: null
+
+  # Si el tope anterior se aplica tambien entre la ENTRADA y TP1, no
+  # solo entre objetivos consecutivos. El autor lo pidio solo para
+  # TP1 -> TP2; esto queda como interruptor para medir la variante.
+  tope_tambien_desde_la_entrada: false
+
+  # Posiciones abiertas a la vez por simbolo. El capital se reparte
+  # entre ellas (cada una opera capital / max_posiciones), asi que
+  # sigue siendo 1x sin apalancamiento.
+  #
+  # SUBIDO DE 1 A 2 el 02/09/2026. Motivo: cuando el precio barre el
+  # VAH y el POC en el mismo movimiento hay DOS operaciones ahi, no
+  # una, y con el limite en 1 la segunda se perdia. Caso que lo
+  # motivo: ONDO el 11-03-2025, el precio toca el VAH a las 00:15 y el
+  # POC a las 00:45, y el POC no pudo operarse hasta 26 dias despues.
+  #
+  # `null` = SIN LIMITE: se abren todas las ordenes que se llenen. El
+  # nominal se reparte entonces entre el numero de niveles, asi que
+  # cada operacion arriesga 1/27 del capital en vez de 1/2.
+  #
+  # Puesto en `null` el 02/09/2026 a peticion del autor, y los datos le
+  # dan la razon: es la UNICA configuracion en la que los dos activos
+  # superan un profit factor de 1.
+  #
+  #   limite 2     BTC PF 1.34 / R -0.033      ONDO PF 0.96 / R -0.073
+  #   sin limite   BTC PF 1.11 / R -0.058      ONDO PF 1.11 / R +0.005
+  #
+  # El limite de 2 daba mejor BTC a costa de que ONDO no levantara
+  # cabeza. Sin limite los dos quedan en 1.11, que es poco margen pero
+  # es margen en ambos.
+  #
+  # OJO al comparar drawdowns entre estas dos filas: no es una mejora
+  # de la estrategia, es el sizing. Con 27 posiciones posibles cada
+  # una mueve 1/27 del capital, y por eso el drawdown cae del 40% al
+  # 3%. Lo comparable entre configuraciones es R y PF.
+  max_posiciones_simultaneas: null
+
+  # Filtro direccional por estructura de mercado (core/structure.py):
+  #   "ninguno"       se opera en cualquier estructura
+  #   "no_en_contra"  se prohibe lo que va contra una estructura clara;
+  #                   en indefinida se opera igual
+  #   "a_favor"       solo a favor de una estructura clara; en
+  #                   indefinida no se opera (el mas restrictivo)
+  #
+  # Motivo: vender el VAH (short cuando el precio llega desde abajo)
+  # acierta un 4.3% en BTC y un 5.6% en ONDO, y esas operaciones apenas
+  # se mueven a favor antes de morir, asi que no es un problema de
+  # stop: es que no habia que tomarlas.
+  # FILTRO DE IMPULSO DE APROXIMACION (SPEC.md §11).
+  #
+  # Cuanto ATR ha recorrido el precio en las ultimas `velas_impulso`
+  # velas antes de tocar el nivel. Por debajo de este minimo no se
+  # opera: el precio llega arrastrandose.
+  #
+  # El autor planteo la pregunta correcta -distinguir los toques con
+  # reaccion de los que atraviesan el nivel sin inmutarse- pero la
+  # respuesta salio AL REVES de lo que los dos suponiamos. Medido por
+  # cuartiles de impulso sobre 272 operaciones:
+  #     Q1 (llegada mas lenta)      -0.417 R,  19% de acierto
+  #     Q4 (llegada mas vertical)   +0.610 R,  43% de acierto
+  # Las malas no son las verticales: son las lentas.
+  #
+  # Interpretacion: cuando el precio llega disparado a un nivel llega
+  # sobreextendido, y el rebote tecnico es mas probable y mas amplio.
+  # Cuando llega arrastrandose, el nivel ya esta digerido y lo atraviesa
+  # sin drama.
+  #
+  # MEDIDO (peor de los cuatro subconjuntos: BTC y ONDO x dos mitades):
+  #   min      BTC R / PF        ONDO R / PF        peor de 4
+  #   ----   ---------------   ---------------   -------------
+  #   None   -0.057 / 1.09     +0.037 / 1.14         -0.067
+  #   0.5    +0.046 / 1.20     +0.189 / 1.35         +0.031
+  #   1.0    +0.110 / 1.36     +0.164 / 1.30         +0.069  <- elegido
+  #   1.5    +0.076 / 1.20     +0.154 / 1.29         +0.030
+  #   2.0    +0.139 / 1.42     +0.289 / 1.73         -0.005
+  #   2.5    +0.012 / 1.28     +0.359 / 1.90         +0.336
+  #
+  # Es la PRIMERA configuracion con los cuatro subconjuntos en positivo,
+  # y lo relevante no es el valor elegido sino que TODOS los umbrales
+  # mejoran respecto a no filtrar: la senal esta en la variable, no en
+  # el ajuste.
+  #
+  # 1.0 y no 2.5 (que tiene mejor peor-caso) porque 2.5 deja solo 45-54
+  # operaciones por activo, muestra demasiado pequena para fiarse.
+  #
+  # PENDIENTE: validar en mas activos antes de darlo por bueno.
+  impulso_minimo_atr: 1.0
+  velas_impulso: 6
+
+  # FILTRO DE ROTACION DEL AREA DE VALOR (SPEC.md §12).
+  #
+  # Dentro del area de valor el precio ROTA entre sus extremos
+  # (Steidlmayer): si viene del POC hacia el VAH, lo normal es que lo
+  # alcance, no que rebote antes de llegar. Este filtro descarta las
+  # entradas que apuestan contra esa rotacion:
+  #     VAH + short  (el precio llega desde abajo, o sea desde dentro)
+  #     VAL + long   (llega desde arriba, tambien desde dentro)
+  #
+  # MEDIDO por zona de llegada, R medio:
+  #                          BTC      ONDO
+  #   POC (dentro del AV)   +0.157   +0.091
+  #   llega desde FUERA     +0.129   +0.019
+  #   llega desde DENTRO    -0.515   -0.014   <- lo que descarta
+  #
+  # DESACTIVADO, y el motivo es interesante: por separado el filtro
+  # dispara BTC (-0.057 -> +0.173 de R medio, PF 1.37) pero hunde la
+  # segunda mitad de ONDO. COMBINADO con el filtro de impulso es aun
+  # peor, porque los dos capturan parte de lo mismo: las entradas que
+  # llegan "desde dentro" suelen ser tambien las que llegan
+  # arrastrandose.
+  #
+  #   filtros            peor de los 4 subconjuntos
+  #   ninguno                    -0.067
+  #   solo rotacion              -0.078
+  #   solo impulso               +0.069  <- el elegido
+  #   impulso + rotacion         -0.096
+  #
+  # Se conserva implementado: si algun dia la configuracion es por
+  # activo, en BTC vale la pena.
+  filtro_rotacion_area_valor: false
+
+  # --- FILTRO DE REGIMEN DE VOLATILIDAD (SPEC.md §16) ---
+  #
+  # La estrategia es de REVERSION: entra contra el movimiento cuando el
+  # precio toca un nivel. De ahi dos hipotesis, las dos confirmadas:
+  #
+  #   ADX ALTO      un nivel tocado en tendencia fuerte se ROMPE. El ADX
+  #                 mide fuerza de tendencia sin decir hacia donde.
+  #   SQUEEZE       con las bandas de Bollinger dentro de los canales de
+  #                 Keltner la volatilidad esta comprimida: el precio no
+  #                 da recorrido para llegar a ningun objetivo y el stop
+  #                 salta por ruido.
+  #
+  # Lo notable de como se encontro: en la muestra completa el ADX NO
+  # separa (+0.024 BTC / +0.043 ONDO), y SOLO aparece al mirar dentro
+  # del subconjunto que ya pasa el filtro de impulso (-0.096 / -0.059).
+  # Es la primera variable que aporta informacion donde el impulso no
+  # llega, en vez de ser un espejo suya.
+  #
+  # MEDIDO sobre las 222 operaciones que se operan de verdad:
+  #                            BTC R [1a/2a]        ONDO R [1a/2a]     ops
+  #   todas                   +0.110 [+0.43/+0.07]  +0.164 [+0.18/+0.16]  222
+  #   sin squeeze             +0.206 [+0.57/+0.16]  +0.204 [+0.21/+0.20]  204
+  #   ADX < 35                +0.245 [+0.57/+0.19]  +0.251 [+0.23/+0.27]  147
+  #   sin squeeze y ADX < 35  +0.405 [+0.70/+0.35]  +0.316 [+0.28/+0.35]  134
+  #
+  # El peor de los cuatro subconjuntos pasa de +0.069 a +0.281, y
+  # conserva el 60% de las operaciones. Es el mayor salto del proyecto.
+  #
+  # Sobre el umbral: se probaron 20, 25, 30 y 35. El 30 tambien funciona
+  # (+0.364 / +0.271 combinado), asi que 35 no es un pico aislado sino
+  # una meseta, que es lo que distingue un efecto real de una
+  # casualidad. Se elige 35 por conservar mas operaciones.
+  adx_maximo: 35.0
+  adx_periodo: 14
+
+  evitar_squeeze: true
+  squeeze_periodo: 20
+  squeeze_desviaciones: 2.0
+  squeeze_multiplicador_keltner: 1.5
+
+  filtro_estructura: "ninguno"
+
+  # Timeframe en el que se juzga la estructura. La direccion la marca
+  # el grafico grande: en 4h la estructura cambia demasiado a menudo
+  # (indefinida el 51% del tiempo) y el filtro no aporta.
+  timeframe_estructura: "1d"
+
+  # Nota minima de una operacion para abrirla (0 a 1). La nota se
+  # calcula en el momento del fill combinando, a partes iguales:
+  #   confluencia    cuantas zonas se apilan alrededor de la entrada
+  #   recorrido      cuanto R hay hasta el primer objetivo
+  #   calidad rango  la nota del lateral del que sale el nivel
+  #   estructura     a favor / indefinida / en contra
+  #
+  # Los cuatro factores se eligieron POR RAZONAMIENTO antes de mirar
+  # resultados, para que medir si separan siga significando algo.
+  #
+  # 0.0 = no filtra (se anota la nota pero se opera todo). Subirlo solo
+  # si se mide que la nota separa de verdad ganadoras de perdedoras.
+  nota_minima_operacion: 0.0
+
+  # Velas de 4h que un nivel deja de operarse despues de haber dado una
+  # entrada. Sin esto, un nivel que el precio serrucha genera veinte
+  # entradas seguidas y el resultado lo domina un solo dia.
+  # 6 velas de 4h = 1 dia.
+  cooldown_velas_nivel: 6
+
+  # Velas de 4h tras las que se cierra una posicion a mercado.
+  # `null` = desactivado (la regla acordada no lleva limite temporal).
+  timeout_velas_4h: null
+
+  # Vigencia de un nivel en velas de 4h desde `confirmado_en` de su
+  # rango. `null` = sin caducidad, un nivel sigue vivo indefinidamente.
+  # Parametro preparado para medir si los niveles se degradan con el
+  # tiempo; en la primera tanda va desactivado.
+  vigencia_nivel_velas_4h: null
+
+  # Costes de Kraken Futures. La entrada y los objetivos son ordenes
+  # limit (maker); el stop es a mercado (taker) y ademas sufre
+  # deslizamiento, que es justo cuando el libro esta peor.
+  comision_maker_pct: 0.0002
+  comision_taker_pct: 0.0005
+  slippage_stop_pct: 0.0005
+
+  # Capital inicial de la curva de equity, en USD. Solo escala el
+  # grafico: las metricas principales van en R (multiplos del riesgo
+  # inicial), que es independiente del tamano de posicion.
+  capital_inicial: 10000.0
+
+  # Como se decide el tamano de cada posicion:
+  #
+  #   "riesgo_fijo"       se fija cuanto se esta dispuesto a PERDER
+  #                       (`riesgo_por_operacion_pct`) y el nominal
+  #                       sale de la distancia al stop:
+  #                           nominal = capital * riesgo / dist_stop
+  #                       Todas las operaciones pesan igual pase lo que
+  #                       pase con el ATR.
+  #   "fraccion_capital"  el reparto antiguo: capital / n_posiciones.
+  #                       Se conserva para poder comparar.
+  #
+  # En los dos casos se respeta el 1x: no se compromete mas capital del
+  # que queda libre, contando las posiciones ya abiertas.
+  modo_sizing: "riesgo_fijo"
+
+  # --- ENTRADA POR CONFIRMACION DE RECHAZO (SPEC.md §14) ---
+  #
+  # En vez de llenar la orden limit al tocar el nivel, se espera al
+  # CIERRE de la vela de 15m que lo toco y solo se entra si el precio se
+  # alejo del nivel. Un cierre lejos es RECHAZO; uno pegado al nivel o
+  # pasado de largo es ACEPTACION, y esos son los toques que atraviesan.
+  #
+  # El valor es el alejamiento minimo exigido, como fraccion del rango
+  # de esa vela. `null` = entrada limit directa en el nivel.
+  #
+  # Cuesta un peor precio de entrada: cuando se confirma, el precio ya
+  # se ha movido a favor. Ese coste hay que medirlo contra lo que se
+  # gana descartando los toques malos.
+  #
+  # MEDIDO sobre las 272 operaciones, las dos senales que lo motivan son
+  # las mas fuertes encontradas hasta ahora:
+  #   cierre lejos del nivel   +0.207 BTC / +0.235 ONDO
+  #   penetracion del nivel    -0.236 BTC / -0.193 ONDO  (negativa)
+  # Por cuartiles: con el cierre mas pegado al nivel el R medio es
+  # -0.580 con un 12% de acierto, frente a +0.18 en el resto.
+  #
+  # Y AUN ASI NO COMPENSA. Medido el peor de los cuatro subconjuntos:
+  #   umbral      BTC R / PF        ONDO R / PF        peor de 4
+  #   ------    ---------------   ---------------   -------------
+  #   null      +0.110 / 1.36     +0.164 / 1.30        +0.069  <- mejor
+  #   0.00      -0.076 / 0.82     -0.019 / 0.93        -0.130
+  #   0.15      -0.290 / 0.56     -0.033 / 0.86        -0.339
+  #   0.50      -0.217 / 0.67     -0.077 / 0.71        -0.317
+  #
+  # La senal es PREDICTIVA pero NO EXPLOTABLE asi. Esperar cuesta el
+  # precio de entrada -la ganancia media cae de +2.80 a +2.33 R- y
+  # ademas BAJA el acierto (25% -> 23%), porque al entrar mas lejos del
+  # nivel el stop queda peor colocado respecto a la estructura y el
+  # objetivo mas cerca.
+  #
+  # Queda implementado por si mas adelante se prueba otra forma de
+  # aprovecharlo (por ejemplo condicionar la orden al rechazo de la vela
+  # ANTERIOR, sin mover el precio de entrada).
+  confirmar_rechazo: null
+
+  # --- CONVERGENCIA DE SEÑALES (core/convergencia.py, SPEC.md §13) ---
+  #
+  # Ninguna senal sirve sola, pero SUMADAS informan: el resultado medio
+  # crece de forma monotona con el numero de senales alineadas, y en los
+  # dos activos a la vez.
+  #
+  # Cinco senales. Tres cuentan en su sentido natural (impulso,
+  # divergencia del MACD, no ir contra la rotacion del area de valor) y
+  # dos cuentan INVERTIDAS porque medidas restan de forma consistente:
+  # ir CONTRA la estructura semanal y tener POCA confluencia de zonas.
+  #
+  # Lo de la estructura es contraintuitivo hasta que se recuerda que
+  # esto es una estrategia de reversion: se entra contra el movimiento,
+  # asi que la estructura dominante es lo que hay que contradecir.
+  #
+  # MEDIDO sobre 272 operaciones (R medio por score):
+  #     score 2  -0.533 (n=56)    score 4  +0.704 (n=82)
+  #     score 3  -0.237 (n=113)   score 5  -0.125 (n=11)
+  #   correlacion con el resultado: +0.247 BTC, +0.219 ONDO
+  #
+  # Descartado el funding rate como sexta senal: no separa y su signo
+  # se invierte entre activos (SPEC.md §13).
+
+  # Score minimo para abrir. `null` = no filtra por score.
+  #
+  # MEDIDO y DESCARTADO como filtro: con score >= 4 BTC se dispara
+  # (+0.414 R, PF 1.85) pero ONDO se queda plano (+0.015, PF 1.05), y
+  # el peor de los cuatro subconjuntos empeora de +0.069 a -0.007.
+  # Filtrar por score sacrifica demasiadas operaciones en ONDO.
+  score_minimo_convergencia: null
+
+  # Multiplicador del riesgo por operacion segun el score: mas margen
+  # donde los datos estan alineados. Un score no listado usa el escalon
+  # inmediatamente inferior.
+  #
+  # AQUI SI FUNCIONA. Como no cambia QUE operaciones se toman -solo
+  # cuanto pesa cada una- el R medio y el PF no se mueven (BTC +0.110 /
+  # PF 1.36 y ONDO +0.164 / PF 1.30 en las tres filas, con las mismas
+  # 96 y 126 operaciones), pero reparte el capital de otra forma.
+  # Remedido el 02/09/2026 sobre la configuracion vigente:
+  #                       BTC ret / DD (ratio)    ONDO ret / DD (ratio)
+  #   sin escalado        +5.9% / -8.7%  (0.67)   +10.5% / -5.3%  (1.98)
+  #   0.5 / 1.0 / 1.5    +12.1% / -10.9% (1.11)   +12.3% / -8.4%  (1.47)  <- elegido
+  #   0.25 / 1.0 / 2.0   +18.8% / -12.3% (1.54)   +14.9% / -11.6% (1.29)
+  #
+  # Se mira el retorno AJUSTADO POR RIESGO, no el bruto: escalar tamano
+  # siempre sube el retorno si la esperanza es positiva, y eso solo no
+  # prueba nada.
+  #
+  # Y por ratio la eleccion NO es unanime: BTC pasa de 0.67 a 1.11 pero
+  # ONDO CAE de 1.98 a 1.47. Es el mismo patron de SPEC.md §8 -cada
+  # activo pide lo contrario-: por ratio puro BTC querria el escalado
+  # fuerte (1.54) y ONDO ninguno (1.98).
+  #
+  # SUBIDO DE 1.5 A 2.0 el 02/09/2026, tras el filtro de regimen. El
+  # motivo es que el Kelly del sistema ha cambiado por completo:
+  #                antes            ahora
+  #     BTC        -3.1%           +13.6%   (medio Kelly +6.8%)
+  #     ONDO       +0.2%           +11.8%   (medio Kelly +5.9%)
+  # Con esperanza negativa la apuesta optima era cero; ahora hay margen.
+  #
+  # Medido, ratio retorno/drawdown:
+  #     escalado 1.5   BTC 4.44   ONDO 3.10
+  #     escalado 2.0   BTC 5.47   ONDO 3.24    <- mejora los dos
+  #
+  # El techo lo pone `riesgo_por_operacion_pct`: con 0.005 de base, el
+  # 2.0 arriesga un 1% del capital como maximo, que sigue siendo SEIS
+  # VECES MENOS que el medio Kelly. Es deliberado: el Kelly supone que
+  # la distribucion medida es la real, y con 68-89 operaciones por
+  # activo la incertidumbre es enorme. Subir ademas el riesgo base a ese
+  # 1% mejora BTC (ratio 5.97) pero empeora ONDO (2.96), asi que
+  # tampoco se toca.
+  # Los escalones se corren de 4 a 5 al entrar `fase_ttm` como sexta
+  # senal: con una senal mas, el score de una operacion buena sube.
+  escalones_tamano_convergencia:
+    0: 0.5
+    3: 1.0
+    5: 2.0
+
+  # Zonas apiladas a partir de las cuales se considera que hay
+  # DEMASIADA confluencia y la senal deja de contar. Medido: con 2 o
+  # mas zonas el R medio cae a -0.236 frente a +0.016 con menos.
+  confluencia_maxima_senal: 2
+
+  # Velas que una divergencia del MACD sigue vigente tras declararse.
+  velas_vigencia_divergencia: 12
+
+  # ESTOCASTICO, sexta senal del score (SPEC.md §15). Mide donde cierra
+  # el precio dentro de su rango reciente: 0 en el minimo, 100 en el
+  # maximo. La senal se activa cuando esta en el extremo que le conviene
+  # al trade: sobreventa (<= bajo) para un long, sobrecompra (>= alto)
+  # para un short.
+  #
+  # MEDIDO sobre 272 operaciones, R medio con y sin la senal:
+  #   global   +0.157  vs  -0.082
+  #   BTC      +0.237  vs  -0.184     <- 0.42 R de diferencia
+  #   ONDO     +0.097  vs  +0.007
+  #
+  # El RSI extremo, sobre las MISMAS operaciones, no separa (-0.060 con
+  # la senal frente a +0.006 sin ella). La diferencia esta en lo que
+  # mide cada uno: el RSI compara la magnitud de subidas y bajadas,
+  # mientras que el estocastico dice literalmente en que parte de su
+  # rango esta el precio ahora, que es lo relevante al tocar un nivel.
+  # PERO NO CUENTA EN EL SCORE, y el motivo es la redundancia: el 94%
+  # de las operaciones que activan el estocastico activan tambien el
+  # impulso, frente al 44% de las que no. Es casi un subconjunto -si el
+  # precio llega disparado al nivel, acaba en el extremo de su rango- y
+  # sumarlo diluye el score en vez de enriquecerlo: la correlacion del
+  # score con el resultado cae de +0.231 a +0.076.
+  #
+  # Como filtro directo tampoco se adopta: mejora el R medio (BTC
+  # +0.182, ONDO +0.198) pero recorta las operaciones un 62% (222 -> 84)
+  # sin mejorar el retorno de forma clara.
+  #
+  # Se sigue evaluando y registrando en la columna `senales` de cada
+  # operacion, para poder medirlo cuando cambien las demas piezas.
+  estocastico_periodo: 14
+  estocastico_suavizado: 3
+  estocastico_bajo: 20.0
+  estocastico_alto: 80.0
+
+  # Senales opcionales que SI deben contar en el score.
+  #
+  # `fase_ttm` ACTIVA (SPEC.md §17): el histograma del TTM ACELERANDO,
+  # en cualquier direccion. Es lo contrario de la lectura manual
+  # habitual del indicador -que busca el histograma agotandose, el
+  # "valle rojo desarrollado"- y medido es lo contrario lo que funciona:
+  #     fase agotandose   -0.086 R (n=26)
+  #     fase acelerando   +0.401 R (n=131)
+  # consistente en los dos activos.
+  #
+  # Y NO es redundante con el impulso, que era el riesgo obvio: su
+  # correlacion es de solo +0.215 y el efecto se mantiene dentro de cada
+  # tramo de impulso (impulso bajo: -0.077 vs +0.212; impulso alto:
+  # +0.327 vs +0.647).
+  #
+  # Efecto en el sistema, ratio retorno/drawdown:
+  #     sin fase   BTC 5.47   ONDO 3.24
+  #     con fase   BTC 5.27   ONDO 3.78
+  # Mejora ONDO y apenas toca BTC. La correlacion del score con el
+  # resultado sube de +0.106 a +0.133.
+  #
+  # `estocastico` sigue fuera por redundante (ver arriba).
+  senales_opcionales_en_score: ["fase_ttm"]
+
+  # Fraccion del capital que se arriesga en cada operacion.
+  #
+  # 0.005 (medio punto) y no mas, porque el sistema todavia no tiene
+  # esperanza positiva y el criterio de Kelly sobre las operaciones
+  # medidas da -3.1% en BTC y +0.2% en ONDO: la apuesta optima esta en
+  # cero o cerca. Con esperanza negativa, cuanto menos se arriesgue,
+  # mas lento se pierde.
+  #
+  # Simulado sobre las operaciones reales, capital final:
+  #     riesgo 0.5%  ->  BTC 0.94x   ONDO 1.00x
+  #     riesgo 2.0%  ->  BTC 0.72x   ONDO 0.94x
+  #     riesgo 25%   ->  RUINA en los dos
+  #
+  # Subirlo solo cuando la esperanza sea positiva y estable, y aun
+  # entonces por debajo de medio Kelly.
+  riesgo_por_operacion_pct: 0.005
+
+  # Repeticiones del baseline de control (niveles desplazados a precios
+  # sin significado). Sirve para saber si el resultado viene del FRVP o
+  # de la deriva del mercado.
+  repeticiones_baseline: 20
+  # Desplazamiento aleatorio aplicado a cada nivel en el baseline, como
+  # fraccion del precio. Se sortea en este intervalo y con signo al
+  # azar: lo bastante lejos para destruir el significado del nivel, lo
+  # bastante cerca para que el precio siga alcanzandolo.
+  desplazamiento_baseline_pct: [0.03, 0.15]
+  semilla_baseline: 20260902
